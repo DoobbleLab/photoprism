@@ -1,0 +1,115 @@
+version: '3.5'
+
+secrets:
+  MARIADB_ROOT_PASSWORD:
+      file: /zp_nvme/docker_db/photoprism/secrets/mariadb_root_password.secret
+  PHOTOPRISM_DATABASE_PASSWORD:
+      file: /zp_nvme/docker_db/photoprism/secrets/photoprism_database_password.secret
+  PHOTOPRISM_ADMIN_PASSWORD:
+      file: /zp_nvme/docker_db/photoprism/secrets/photoprism_admin_password.secret
+
+services:
+  app:
+    image: photoprism/photoprism:latest
+    restart: unless-stopped
+    depends_on:
+      - db
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    ports:
+      - "2342:2342" # HTTP port (host:container)
+    secrets:
+      - PHOTOPRISM_ADMIN_PASSWORD
+      - PHOTOPRISM_DATABASE_PASSWORD
+    environment:
+      PHOTOPRISM_ADMIN_PASSWORD_FILE: /run/secrets/PHOTOPRISM_ADMIN_PASSWORD         # YOUR INITIAL ADMIN PASSWORD (MINIMUM 8 CHARACTERS, USERNAME "admin")
+      PHOTOPRISM_SITE_URL: ${SITE_URL}               # public server URL incl http:// or https:// and /path, :port is optional
+      PHOTOPRISM_ORIGINALS_LIMIT: 5000               # file size limit for originals in MB (increase for high-res video)
+      PHOTOPRISM_HTTP_COMPRESSION: "gzip"            # improves transfer speed and bandwidth utilization (none or gzip)
+      PHOTOPRISM_LOG_LEVEL: "info"                   # log level: trace, debug, info, warning, error, fatal, or panic
+      PHOTOPRISM_PUBLIC: "false"                     # no authentication required (disables password protection)
+      PHOTOPRISM_READONLY: "false"                   # do not modify originals directory (reduced functionality)
+      PHOTOPRISM_EXPERIMENTAL: "false"               # enables experimental features
+      PHOTOPRISM_DISABLE_CHOWN: "false"              # disables storage permission updates on startup
+      PHOTOPRISM_DISABLE_WEBDAV: "false"             # disables built-in WebDAV server
+      PHOTOPRISM_DISABLE_SETTINGS: "false"           # disables settings UI and API
+      PHOTOPRISM_DISABLE_TENSORFLOW: "false"         # disables all features depending on TensorFlow
+      PHOTOPRISM_DISABLE_FACES: "false"              # disables facial recognition
+      PHOTOPRISM_DISABLE_CLASSIFICATION: "false"     # disables image classification
+      PHOTOPRISM_DISABLE_RAW: "false"                # disables indexing and conversion of RAW files
+      PHOTOPRISM_RAW_PRESETS: "false"                # enables applying user presets when converting RAW files (reduces performance)
+      PHOTOPRISM_JPEG_QUALITY: 95                    # image quality, a higher value reduces compression (25-100)
+      PHOTOPRISM_DETECT_NSFW: "false"                # flag photos as private that MAY be offensive (requires TensorFlow)
+      PHOTOPRISM_UPLOAD_NSFW: "true"                 # allows uploads that MAY be offensive
+      PHOTOPRISM_DATABASE_DRIVER: "mysql"            # use MariaDB 10.5+ or MySQL 8+ instead of SQLite for improved performance
+      PHOTOPRISM_DATABASE_SERVER: "db:3306"     # MariaDB or MySQL database server (hostname:port)
+      PHOTOPRISM_DATABASE_NAME: ${PHOTOPRISM_DATABASE_NAME}         # MariaDB or MySQL database schema name
+      PHOTOPRISM_DATABASE_USER: ${PHOTOPRISM_DATABASE_USER}          # MariaDB or MySQL database user name
+      PHOTOPRISM_DATABASE_PASSWORD_FILE: /run/secrets/PHOTOPRISM_DATABASE_PASSWORD       # MariaDB or MySQL database user password
+      PHOTOPRISM_SITE_CAPTION: "AI-Powered Photos App"
+      PHOTOPRISM_SITE_DESCRIPTION: ${SITE_DESCRIPTION}                     # meta site description
+      PHOTOPRISM_SITE_AUTHOR: ${SITE_AUTHOR}                        # meta site author
+      PHOTOPRISM_FFMPEG_ENCODER: "intel"
+      PHOTOPRISM_INIT: "intel tensorflow"
+      ## Switch to a non-root user after initialization (supported IDs are 33, 50-99, 500-600, and 900-1200):
+      PHOTOPRISM_UID: 1000
+      PHOTOPRISM_GID: 1000
+      PHOTOPRISM_UMASK: 0000
+    devices:
+      - "/dev/dri:/dev/dri"                         # Intel QSV
+    working_dir: "/photoprism" # do not change or remove
+    volumes:
+      - ${PHOTOPRISM_ORIGINALS}:/photoprism/originals               # Original media files (DO NOT REMOVE)
+      - ${PHOTOPRISM_IMPORT}:/photoprism/import              # *Optional* base folder from which files can be imported to originals
+      - ./storage:/photoprism/storage                  # *Writable* storage folder for cache, database, and sidecar files (DO NOT REMOVE)
+    labels:
+      - flame.type=application
+      - flame.name=Photoprism
+      - flame.url=${SITE_URL}  
+      - flame.category=Medias
+      - flame.icon=camera
+      # Traefik
+      #- traefik.enable=true
+      #- traefik.http.routers.photo.tls=true
+      #- traefik.http.routers.photo.rule=Host(`photo.gwerner.me`)
+      #- traefik.http.services.photo.loadbalancer.server.port=2342
+      #- traefik.http.routers.photo.entrypoints=websecure
+      #- traefik.http.routers.photo.tls.certresolver=letsencrypt
+      #- traefik.http.routers.photo.service=api@internal
+      #- traefik.http.routers.photo.middlewares=strip
+      #- traefik.http.middlewares.strip.stripprefix.prefixes=/photo
+
+  ## Database Server (recommended)
+  ## see https://docs.photoprism.app/getting-started/faq/#should-i-use-sqlite-mariadb-or-mysql
+  db:
+    ## If MariaDB gets stuck in a restart loop, this points to a memory or filesystem issue:
+    ## https://docs.photoprism.app/getting-started/troubleshooting/#fatal-server-errors
+    restart: unless-stopped
+    image: mariadb:10.7
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    command: mysqld --innodb-buffer-pool-size=128M --transaction-isolation=READ-COMMITTED --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-connections=512 --innodb-rollback-on-timeout=OFF --innodb-lock-wait-timeout=120
+    labels:
+       - com.centurylinklabs.watchtower.monitor-only=true
+    volumes:
+      - "./database:/var/lib/mysql" # DO NOT REMOVE
+    secrets:
+      - PHOTOPRISM_DATABASE_PASSWORD
+      - MARIADB_ROOT_PASSWORD
+    environment:
+      MARIADB_AUTO_UPGRADE: "1"
+      MARIADB_INITDB_SKIP_TZINFO: "1"
+      MARIADB_DATABASE: ${PHOTOPRISM_DATABASE_NAME} 
+      MARIADB_USER: ${MARIADB_USER}
+      MARIADB_PASSWORD_FILE: /run/secrets/PHOTOPRISM_DATABASE_PASSWORD
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/MARIADB_ROOT_PASSWORD
+
+volumes:
+  photoprism_import:
+      name: ${PHOTOPRISM_IMPORT}
+      external: false
+  photoprism_originals:
+      name: ${PHOTOPRISM_ORIGINALS}
+      external: false
